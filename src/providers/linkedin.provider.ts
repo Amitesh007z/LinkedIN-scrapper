@@ -1,8 +1,7 @@
 import * as cheerio from 'cheerio';
 import type { AnyNode } from 'domhandler';
 import type { CheerioAPI } from 'cheerio';
-import { existsSync, writeFileSync } from 'node:fs';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import type { AppConfig } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { dedupeStrings, normalizeDate, normalizeText } from '../utils/normalize.js';
@@ -11,42 +10,43 @@ import type { ProfileProvider } from './profile.provider.js';
 
 export class LinkedInPlaywrightProvider implements ProfileProvider {
   private browser?: Browser;
+  private context?: BrowserContext;
+  private authenticationPromise?: Promise<BrowserContext>;
 
   constructor(private readonly config: AppConfig) {}
 
   async fetchProfile(url: string): Promise<Profile> {
-    const browser = await this.getBrowser();
-    const storageState = this.getStorageState();
-    const context = await browser.newContext({
-      locale: 'en-US',
-      ...(storageState ? { storageState } : {})
-    });
-    const page = await context.newPage();
-    page.setDefaultTimeout(this.config.PAGE_TIMEOUT_MS);
-    page.setDefaultNavigationTimeout(this.config.PAGE_TIMEOUT_MS);
-
-    try {
-      await this.withTimeout(this.scrapePage(page, url), this.config.SCRAPE_TIMEOUT_MS);
-      const profile = parseProfile(await page.content(), url);
-      if (profile.name?.toLowerCase() === 'join linkedin') {
-        throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn returned an authentication wall instead of the profile.', 502);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const context = await this.getAuthenticatedContext();
+      const page = await context.newPage();
+      page.setDefaultTimeout(this.config.PAGE_TIMEOUT_MS);
+      page.setDefaultNavigationTimeout(this.config.PAGE_TIMEOUT_MS);
+      try {
+        await this.withTimeout(this.scrapePage(page, url), this.config.SCRAPE_TIMEOUT_MS);
+        const profile = parseProfile(await page.content(), url);
+        if (!profile.name || profile.name.toLowerCase() === 'join linkedin') {
+          throw new AppError('EXTRACTION_FAILED', 'LinkedIn profile content was not available.', 502);
+        }
+        return profile;
+      } catch (error) {
+        if (error instanceof AppError && error.code === 'AUTHENTICATION_FAILED' && attempt === 0) {
+          await this.invalidateAuthentication();
+          continue;
+        }
+        if (error instanceof AppError) throw error;
+        if (error instanceof Error && error.name === 'TimeoutError') {
+          throw new AppError('UPSTREAM_TIMEOUT', 'LinkedIn did not respond before the timeout.', 502);
+        }
+        throw new AppError('UPSTREAM_UNAVAILABLE', 'LinkedIn could not be reached.', 502);
+      } finally {
+        await page.close();
       }
-      if (this.config.LINKEDIN_STORAGE_STATE) {
-        await context.storageState({ path: this.config.LINKEDIN_STORAGE_STATE });
-      }
-      return profile;
-    } catch (error) {
-      if (error instanceof AppError) throw error;
-      if (error instanceof Error && error.name === 'TimeoutError') {
-        throw new AppError('UPSTREAM_TIMEOUT', 'LinkedIn did not respond before the timeout.', 502);
-      }
-      throw new AppError('UPSTREAM_UNAVAILABLE', 'LinkedIn could not be reached.', 502);
-    } finally {
-      await context.close();
     }
+    throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn authentication could not be established.', 502);
   }
 
   async close(): Promise<void> {
+    await this.invalidateAuthentication();
     await this.browser?.close();
     this.browser = undefined;
   }
@@ -56,11 +56,45 @@ export class LinkedInPlaywrightProvider implements ProfileProvider {
     return this.browser;
   }
 
-  private getStorageState(): string | undefined {
-    if (this.config.LINKEDIN_STORAGE_STATE_JSON) {
-      writeFileSync(this.config.LINKEDIN_STORAGE_STATE, this.config.LINKEDIN_STORAGE_STATE_JSON, { mode: 0o600 });
+  private async getAuthenticatedContext(): Promise<BrowserContext> {
+    if (this.context) return this.context;
+    this.authenticationPromise ??= this.authenticate();
+    try {
+      this.context = await this.authenticationPromise;
+      return this.context;
+    } finally {
+      this.authenticationPromise = undefined;
     }
-    return existsSync(this.config.LINKEDIN_STORAGE_STATE) ? this.config.LINKEDIN_STORAGE_STATE : undefined;
+  }
+
+  private async authenticate(): Promise<BrowserContext> {
+    const context = await (await this.getBrowser()).newContext({ locale: 'en-US' });
+    const page = await context.newPage();
+    page.setDefaultTimeout(this.config.PAGE_TIMEOUT_MS);
+    page.setDefaultNavigationTimeout(this.config.PAGE_TIMEOUT_MS);
+    try {
+      await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded' });
+      await this.login(page);
+      const bodyText = (await page.locator('body').innerText()).toLowerCase();
+      if (page.url().includes('/authwall') || bodyText.includes('security verification') || bodyText.includes('checkpoint') || bodyText.includes('two-step verification')) {
+        throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502);
+      }
+      if (page.url().includes('/login') || bodyText.includes('sign in to linkedin') || bodyText.includes('join linkedin')) {
+        throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn authentication failed.', 502);
+      }
+      return context;
+    } catch (error) {
+      await context.close();
+      throw error;
+    } finally {
+      await page.close().catch(() => undefined);
+    }
+  }
+
+  private async invalidateAuthentication(): Promise<void> {
+    const context = this.context;
+    this.context = undefined;
+    if (context) await context.close();
   }
 
   private async scrapePage(page: Page, url: string): Promise<void> {

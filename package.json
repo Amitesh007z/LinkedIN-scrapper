@@ -10,7 +10,6 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server.ts",
-    "auth:linkedin": "tsx src/auth.ts",
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",

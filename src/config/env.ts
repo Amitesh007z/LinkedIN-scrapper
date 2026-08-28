@@ -8,8 +8,6 @@ const envSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   LINKEDIN_EMAIL: z.string().optional(),
   LINKEDIN_PASSWORD: z.string().optional(),
-  LINKEDIN_STORAGE_STATE: z.string().default('storageState.json'),
-  LINKEDIN_STORAGE_STATE_JSON: z.string().optional(),
   BROWSER_HEADLESS: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
   PAGE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   SCRAPE_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),

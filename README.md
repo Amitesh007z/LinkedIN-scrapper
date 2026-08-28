@@ -21,9 +21,7 @@ The service listens on `http://127.0.0.1:3000` by default.
 
 Profile extraction requires a Chromium installation and authorized LinkedIn credentials. Install the browser with `npx playwright install chromium`, then put credentials only in `.env` or the deployment provider's secret environment variables. The service does not bypass CAPTCHA, MFA, checkpoints, or other LinkedIn security controls.
 
-If LinkedIn presents an authwall, run `npm run auth:linkedin`. A visible browser opens so you can complete login and verification yourself. The command saves the authorized session to `storageState.json`, which is gitignored and reused by the API. Never commit or share that file.
-
-For Render automatic reuse, place the complete contents of a freshly created `storageState.json` into the secret `LINKEDIN_STORAGE_STATE_JSON`. This is sensitive session material and can expire or be invalidated by LinkedIn; credentials alone cannot guarantee cloud login because LinkedIn may challenge datacenter traffic.
+The server uses only `LINKEDIN_EMAIL` and `LINKEDIN_PASSWORD`. Authentication state is kept in RAM only: the browser context is reused while valid, and normal expiry triggers one automatic context recreation and login retry. CAPTCHA, MFA, checkpoints, and authwalls are returned as controlled errors and are not bypassed.
 
 ## API
 

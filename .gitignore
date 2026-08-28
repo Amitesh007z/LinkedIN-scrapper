@@ -7,6 +7,4 @@ coverage/
 playwright-report/
 test-results/
 *.log
-storageState.json
-*.storage.json
 cookies.json
