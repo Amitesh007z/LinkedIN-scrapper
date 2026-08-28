@@ -27,6 +27,7 @@ describe('normalization', () => {
 describe('runtime configuration', () => {
   it('protects production from loopback binding', () => {
     expect(loadConfig({ NODE_ENV: 'production', HOST: '127.0.0.1' }).HOST).toBe('0.0.0.0');
+    expect(loadConfig({ NODE_ENV: 'development', HOST: '127.0.0.1', RENDER: 'true' }).HOST).toBe('0.0.0.0');
     expect(loadConfig({ NODE_ENV: 'development', HOST: '127.0.0.1' }).HOST).toBe('127.0.0.1');
   });
 });

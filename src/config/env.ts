@@ -23,9 +23,10 @@ export type AppConfig = z.infer<typeof envSchema>;
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const config = envSchema.parse(env);
   const isLoopbackHost = config.HOST === 'localhost' || config.HOST === '127.0.0.1' || config.HOST === '::1';
+  const isRender = env.RENDER === 'true' || Boolean(env.RENDER_EXTERNAL_HOSTNAME);
   return {
     ...config,
-    HOST: config.NODE_ENV === 'production' && (config.HOST === undefined || isLoopbackHost)
+    HOST: (config.NODE_ENV === 'production' || isRender) && (config.HOST === undefined || isLoopbackHost)
       ? '0.0.0.0'
       : config.HOST ?? '127.0.0.1'
   };
