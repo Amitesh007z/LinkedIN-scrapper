@@ -1,0 +1,216 @@
+import * as cheerio from 'cheerio';
+import type { AnyNode } from 'domhandler';
+import type { CheerioAPI } from 'cheerio';
+import { existsSync } from 'node:fs';
+import { chromium, type Browser, type Page } from 'playwright';
+import type { AppConfig } from '../config/env.js';
+import { AppError } from '../utils/errors.js';
+import { dedupeStrings, normalizeDate, normalizeText } from '../utils/normalize.js';
+import type { Certification, Education, Experience, Language, Profile } from '../types/profile.js';
+import type { ProfileProvider } from './profile.provider.js';
+
+export class LinkedInPlaywrightProvider implements ProfileProvider {
+  private browser?: Browser;
+
+  constructor(private readonly config: AppConfig) {}
+
+  async fetchProfile(url: string): Promise<Profile> {
+    const browser = await this.getBrowser();
+    const context = await browser.newContext({
+      locale: 'en-US',
+      ...(existsSync(this.config.LINKEDIN_STORAGE_STATE) ? { storageState: this.config.LINKEDIN_STORAGE_STATE } : {})
+    });
+    const page = await context.newPage();
+    page.setDefaultTimeout(this.config.PAGE_TIMEOUT_MS);
+    page.setDefaultNavigationTimeout(this.config.PAGE_TIMEOUT_MS);
+
+    try {
+      await this.withTimeout(this.scrapePage(page, url), this.config.SCRAPE_TIMEOUT_MS);
+      const profile = parseProfile(await page.content(), url);
+      if (profile.name?.toLowerCase() === 'join linkedin') {
+        throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn returned an authentication wall instead of the profile.', 502);
+      }
+      if (this.config.LINKEDIN_STORAGE_STATE) {
+        await context.storageState({ path: this.config.LINKEDIN_STORAGE_STATE });
+      }
+      return profile;
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        throw new AppError('UPSTREAM_TIMEOUT', 'LinkedIn did not respond before the timeout.', 502);
+      }
+      throw new AppError('UPSTREAM_UNAVAILABLE', 'LinkedIn could not be reached.', 502);
+    } finally {
+      await context.close();
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.browser?.close();
+    this.browser = undefined;
+  }
+
+  private async getBrowser(): Promise<Browser> {
+    this.browser ??= await chromium.launch({ headless: this.config.BROWSER_HEADLESS });
+    return this.browser;
+  }
+
+  private async scrapePage(page: Page, url: string): Promise<void> {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(500);
+    let bodyText = (await page.locator('body').innerText()).toLowerCase();
+
+    if (page.url().includes('/login') || bodyText.includes('sign in to linkedin') || bodyText.includes('join linkedin')) {
+      if (!page.url().includes('/login')) {
+        await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded' });
+      }
+      await this.login(page);
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(500);
+      bodyText = (await page.locator('body').innerText()).toLowerCase();
+    }
+
+    if (page.url().includes('/authwall') || bodyText.includes('security verification') || bodyText.includes('verify your identity') || bodyText.includes('checkpoint') || bodyText.includes('two-step verification')) {
+      throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502);
+    }
+    if (page.url().includes('/login') || bodyText.includes('sign in to linkedin') || bodyText.includes('join linkedin')) {
+      throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn authentication is required or failed.', 502);
+    }
+    if (bodyText.includes('page not found') || bodyText.includes('profile not available')) {
+      throw new AppError('PROFILE_NOT_FOUND', 'The LinkedIn profile was not found or is unavailable.', 404);
+    }
+
+    await this.scrollPage(page);
+  }
+
+  private async login(page: Page): Promise<void> {
+    if (!this.config.LINKEDIN_EMAIL || !this.config.LINKEDIN_PASSWORD) {
+      throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn credentials are not configured.', 502);
+    }
+    try {
+      const username = page.locator('input[autocomplete="username"]:visible').first();
+      const password = page.locator('input[autocomplete="current-password"]:visible').first();
+      const submit = page.getByRole('button', { name: /^sign in$/i }).filter({ visible: true }).first();
+      await username.waitFor({ state: 'visible', timeout: 10_000 });
+      await username.fill(this.config.LINKEDIN_EMAIL);
+      await password.fill(this.config.LINKEDIN_PASSWORD);
+      await submit.click({ timeout: 5_000 });
+      await page.waitForLoadState('domcontentloaded', { timeout: 10_000 });
+    } catch {
+      const currentText = (await page.locator('body').innerText().catch(() => '')).toLowerCase();
+      if (page.url().includes('/authwall') || currentText.includes('security verification') || currentText.includes('checkpoint')) {
+        throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502);
+      }
+      throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn login controls were unavailable or the login did not complete.', 502);
+    }
+  }
+
+  private async scrollPage(page: Page): Promise<void> {
+    for (let index = 0; index < 4; index += 1) {
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.waitForTimeout(350);
+    }
+  }
+
+  private async withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new AppError('UPSTREAM_TIMEOUT', 'Profile extraction exceeded the configured timeout.', 502)), timeoutMs);
+    });
+    try {
+      return await Promise.race([operation, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+}
+
+export function parseProfile(html: string, profileUrl: string): Profile {
+  const $ = cheerio.load(html);
+  const section = (heading: string): cheerio.Cheerio<AnyNode> => {
+    const headingNode = $('h2, h3').filter((_, node) => normalizeText($(node).text())?.toLowerCase() === heading.toLowerCase()).first();
+    if (!headingNode.length) return headingNode;
+    const semanticSection = headingNode.closest('section');
+    if (semanticSection.length) return semanticSection;
+    return headingNode.parents().filter((_, node) => {
+      const length = $(node).text().length;
+      return length > heading.length && length < 2_000;
+    }).first();
+  };
+  const text = (selector: string): string | null => normalizeText($(selector).first().text());
+  const aboutSection = section('about');
+  const profileName = text('h1') ?? normalizeText($('main h2').filter((_, node) => {
+    const value = normalizeText($(node).text());
+    return Boolean(value && !/^\d+ notifications$/i.test(value));
+  }).first().text());
+  const header = $('main h2').filter((_, node) => normalizeText($(node).text()) === profileName).first().parents().filter((_, node) => {
+    const length = $(node).text().length;
+    return length > (profileName?.length ?? 0) && length < 300;
+  }).first();
+  const headerValues = header.find('div, span').map((_, node) => normalizeText($(node).text())).get().filter((value): value is string => Boolean(value));
+  const headerTextNodes = header.find('*').contents().filter((_, node) => node.type === 'text').map((_, node) => normalizeText($(node).text())).get().filter((value): value is string => Boolean(value));
+  const location = headerValues.find((value) => value.toLowerCase().includes('contact info'))?.replace(/\s*·\s*contact info.*$/i, '') ?? text('.text-body-small.inline.t-black--light, .pv-text-details__left-panel .text-body-small');
+  const headline = headerTextNodes.find((value) => value !== profileName && !value.toLowerCase().includes('contact info') && value !== location && value.length < 160) ?? text('.text-body-medium, [data-generated-suggestion-target]');
+  const headlineCandidate = headline && headline !== location && !headline.toLowerCase().includes('contact info') ? headline : headerValues.find((value) => value !== profileName && value !== location && !value.toLowerCase().includes('contact info') && value.length < 160) ?? null;
+  const aboutText = normalizeText(aboutSection.text())?.replace(/^about\s*/i, '').replace(/\s*top skills.*$/i, '') ?? null;
+  const parsedSkills = parseSkills(section('skills'), $);
+  const embeddedSkills = normalizeText(aboutSection.text())?.match(/top skills\s*(.*)$/i)?.[1]?.split(/\s*•\s*/) ?? [];
+
+  return {
+    profile_url: profileUrl,
+    name: profileName,
+    headline: headlineCandidate,
+    location,
+    about: normalizeText(aboutSection.find('div.inline-show-more-text, span[aria-hidden="true"]').first().text()) ?? aboutText,
+    profile_image_url: $('img[alt*="profile" i], img.pv-top-card-profile-picture__image, main img').first().attr('src') ?? null,
+    experience: parseExperience(section('experience'), $),
+    education: parseEducation(section('education'), $),
+    skills: parsedSkills.length > 0 ? parsedSkills : dedupeStrings(embeddedSkills.map((value) => normalizeText(value)).filter((value): value is string => Boolean(value))),
+    certifications: parseCertifications(section('licenses & certifications'), $),
+    languages: parseLanguages(section('languages'), $)
+  };
+}
+
+function valuesFromItem(item: AnyNode, $: CheerioAPI): string[] {
+  return $(item).find('span[aria-hidden="true"], .t-14').map((_, child) => normalizeText($(child).text())).get().filter((value): value is string => Boolean(value));
+}
+
+function parseDateRange(value: string | undefined): { start: string | null; end: string | null } {
+  if (!value) return { start: null, end: null };
+  const [start, end] = value.split(/\s+-\s+/);
+  return { start: normalizeDate(start), end: normalizeDate(end) };
+}
+
+function parseExperience(container: cheerio.Cheerio<AnyNode>, $: CheerioAPI): Experience[] {
+  return container.find('li').map((_, node) => {
+    const values = valuesFromItem(node, $);
+    const range = parseDateRange(values.find((value) => /\b(19|20)\d{2}\b/.test(value)));
+    return { title: values[0] ?? null, company: values[1] ?? null, location: values[2] ?? null, start_date: range.start, end_date: range.end, description: normalizeText($(node).find('.t-14.t-normal, .inline-show-more-text').text()) };
+  }).get();
+}
+
+function parseEducation(container: cheerio.Cheerio<AnyNode>, $: CheerioAPI): Education[] {
+  return container.find('li').map((_, node) => {
+    const values = valuesFromItem(node, $);
+    const range = parseDateRange(values.find((value) => /\b(19|20)\d{2}\b/.test(value)));
+    return { school: values[0] ?? null, degree: values[1] ?? null, field_of_study: values[2] ?? null, start_date: range.start, end_date: range.end, description: normalizeText($(node).find('.t-14.t-normal, .inline-show-more-text').text()) };
+  }).get();
+}
+
+function parseSkills(container: cheerio.Cheerio<AnyNode>, $: CheerioAPI): string[] {
+  return dedupeStrings(container.find('li, span[aria-hidden="true"]').map((_, node) => normalizeText($(node).text())).get().filter((value): value is string => Boolean(value)));
+}
+
+function parseCertifications(container: cheerio.Cheerio<AnyNode>, $: CheerioAPI): Certification[] {
+  return container.find('li').map((_, node) => {
+    const values = valuesFromItem(node, $);
+    return { name: values[0] ?? null, issuer: values[1] ?? null, issue_date: normalizeDate(values.find((value) => value.toLowerCase().includes('issued'))), expiration_date: normalizeDate(values.find((value) => value.toLowerCase().includes('expires'))), credential_id: normalizeText(values.find((value) => value.toLowerCase().includes('credential'))?.replace(/^credential id:?\s*/i, '')) };
+  }).get();
+}
+
+function parseLanguages(container: cheerio.Cheerio<AnyNode>, $: CheerioAPI): Language[] {
+  return container.find('li').map((_, node) => {
+    const values = valuesFromItem(node, $);
+    return { name: values[0] ?? null, proficiency: values[1] ?? null };
+  }).get();
+}

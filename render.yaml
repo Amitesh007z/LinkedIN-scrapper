@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: profilelens-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: HOST
+        value: 0.0.0.0
+      - key: LINKEDIN_EMAIL
+        sync: false
+      - key: LINKEDIN_PASSWORD
+        sync: false
+      - key: LINKEDIN_STORAGE_STATE
+        value: /tmp/profilelens-storage.json
