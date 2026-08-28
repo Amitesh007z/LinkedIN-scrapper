@@ -8,10 +8,13 @@ import { dedupeStrings, normalizeDate, normalizeText } from '../utils/normalize.
 import type { Certification, Education, Experience, Language, Profile } from '../types/profile.js';
 import type { ProfileProvider } from './profile.provider.js';
 
+export type AuthState = 'UNINITIALIZED' | 'AUTHENTICATING' | 'AUTHENTICATED' | 'EXPIRED' | 'CHALLENGED' | 'FAILED';
+
 export class LinkedInPlaywrightProvider implements ProfileProvider {
   private browser?: Browser;
   private context?: BrowserContext;
   private authenticationPromise?: Promise<BrowserContext>;
+  private authState: AuthState = 'UNINITIALIZED';
 
   constructor(private readonly config: AppConfig) {}
 
@@ -68,6 +71,7 @@ export class LinkedInPlaywrightProvider implements ProfileProvider {
   }
 
   private async authenticate(): Promise<BrowserContext> {
+    this.authState = 'AUTHENTICATING';
     const context = await (await this.getBrowser()).newContext({ locale: 'en-US' });
     const page = await context.newPage();
     page.setDefaultTimeout(this.config.PAGE_TIMEOUT_MS);
@@ -87,9 +91,11 @@ export class LinkedInPlaywrightProvider implements ProfileProvider {
         const invalidCredentials = /incorrect|invalid|wrong|try again/.test(bodyText);
         throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn authentication failed.', 502, { stage: 'POST_LOGIN', reason: invalidCredentials ? 'CREDENTIALS_REJECTED' : 'LOGIN_STATE_NOT_CONFIRMED', challenge: false });
       }
+      this.authState = 'AUTHENTICATED';
       return context;
     } catch (error) {
       await context.close();
+      this.authState = error instanceof AppError && error.code === 'AUTHENTICATION_CHALLENGE' ? 'CHALLENGED' : 'FAILED';
       if (error instanceof AppError) throw error;
       throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn authentication failed.', 502, { stage: 'AUTHENTICATE', reason: 'UNEXPECTED_AUTH_ERROR', challenge: false });
     } finally {
@@ -100,6 +106,7 @@ export class LinkedInPlaywrightProvider implements ProfileProvider {
   private async invalidateAuthentication(): Promise<void> {
     const context = this.context;
     this.context = undefined;
+    if (this.authState === 'AUTHENTICATED') this.authState = 'EXPIRED';
     if (context) await context.close();
   }
 
@@ -108,21 +115,11 @@ export class LinkedInPlaywrightProvider implements ProfileProvider {
     await page.waitForTimeout(500);
     let bodyText = (await page.locator('body').innerText()).toLowerCase();
 
-    if (page.url().includes('/login') || bodyText.includes('sign in to linkedin') || bodyText.includes('join linkedin')) {
-      if (!page.url().includes('/login')) {
-        await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded' });
-      }
-      await this.login(page);
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(500);
-      bodyText = (await page.locator('body').innerText()).toLowerCase();
-    }
-
     if (page.url().includes('/authwall') || bodyText.includes('security verification') || bodyText.includes('verify your identity') || bodyText.includes('checkpoint') || bodyText.includes('two-step verification')) {
-      throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502);
+      throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502, { stage: 'PROFILE_LOAD', reason: 'SECURITY_CHALLENGE', challenge: true });
     }
     if (page.url().includes('/login') || bodyText.includes('sign in to linkedin') || bodyText.includes('join linkedin')) {
-      throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn authentication is required or failed.', 502);
+      throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn authentication expired.', 502, { stage: 'PROFILE_LOAD', reason: 'SESSION_EXPIRED', challenge: false });
     }
     if (bodyText.includes('page not found') || bodyText.includes('profile not available')) {
       throw new AppError('PROFILE_NOT_FOUND', 'The LinkedIn profile was not found or is unavailable.', 404);
