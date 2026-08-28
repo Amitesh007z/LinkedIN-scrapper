@@ -10,6 +10,7 @@ RUN npm run build && npm prune --omit=dev
 RUN chown -R pwuser:pwuser /app
 
 ENV NODE_ENV=production
+ENV HOST=0.0.0.0
 USER pwuser
 EXPOSE 3000
 CMD ["node", "dist/server.js"]

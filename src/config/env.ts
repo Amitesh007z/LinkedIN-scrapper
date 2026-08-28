@@ -4,7 +4,7 @@ import { z } from 'zod';
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
-  HOST: z.string().min(1).default('127.0.0.1'),
+  HOST: z.string().min(1).optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   LINKEDIN_EMAIL: z.string().optional(),
   LINKEDIN_PASSWORD: z.string().optional(),
@@ -21,5 +21,9 @@ const envSchema = z.object({
 export type AppConfig = z.infer<typeof envSchema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  return envSchema.parse(env);
+  const config = envSchema.parse(env);
+  return {
+    ...config,
+    HOST: config.HOST ?? (config.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1')
+  };
 }
