@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { canonicalizeLinkedInUrl } from '../utils/linkedin-url.js';
 import { profileResponseSchema } from '../schemas/profile.schema.js';
 import { toAppError } from '../utils/errors.js';
@@ -19,7 +19,7 @@ export function registerProfileRoutes(app: FastifyInstance, service: ProfileServ
       additionalProperties: false
   };
 
-  const handler = async (request: { query?: unknown; body?: unknown; id: string }, reply: { code: (status: number) => typeof reply; send: (value: unknown) => unknown }) => {
+  const handler = async (request: FastifyRequest, reply: FastifyReply) => {
     const query = request.query as { url?: string } | undefined;
     const body = request.body as { url?: string } | undefined;
     const input = { url: query?.url ?? body?.url };
@@ -32,6 +32,7 @@ export function registerProfileRoutes(app: FastifyInstance, service: ProfileServ
       return reply.send(profileResponseSchema.parse({ data: result.profile, meta: { source: 'linkedin', schema_version: '1.0', cached: result.cached, fetched_at: new Date().toISOString() } }));
     } catch (error) {
       const appError = toAppError(error);
+      if (appError.details) request.log.warn({ event: 'linkedin_auth_diagnostic', ...appError.details }, appError.message);
       return reply.code(appError.statusCode).send({ error: { code: appError.code, message: appError.message, request_id: request.id } });
     }
   };
