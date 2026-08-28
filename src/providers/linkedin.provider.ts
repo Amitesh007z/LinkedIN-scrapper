@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
 import type { AnyNode } from 'domhandler';
 import type { CheerioAPI } from 'cheerio';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { chromium, type Browser, type Page } from 'playwright';
 import type { AppConfig } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
@@ -16,9 +16,10 @@ export class LinkedInPlaywrightProvider implements ProfileProvider {
 
   async fetchProfile(url: string): Promise<Profile> {
     const browser = await this.getBrowser();
+    const storageState = this.getStorageState();
     const context = await browser.newContext({
       locale: 'en-US',
-      ...(existsSync(this.config.LINKEDIN_STORAGE_STATE) ? { storageState: this.config.LINKEDIN_STORAGE_STATE } : {})
+      ...(storageState ? { storageState } : {})
     });
     const page = await context.newPage();
     page.setDefaultTimeout(this.config.PAGE_TIMEOUT_MS);
@@ -53,6 +54,13 @@ export class LinkedInPlaywrightProvider implements ProfileProvider {
   private async getBrowser(): Promise<Browser> {
     this.browser ??= await chromium.launch({ headless: this.config.BROWSER_HEADLESS });
     return this.browser;
+  }
+
+  private getStorageState(): string | undefined {
+    if (this.config.LINKEDIN_STORAGE_STATE_JSON) {
+      writeFileSync(this.config.LINKEDIN_STORAGE_STATE, this.config.LINKEDIN_STORAGE_STATE_JSON, { mode: 0o600 });
+    }
+    return existsSync(this.config.LINKEDIN_STORAGE_STATE) ? this.config.LINKEDIN_STORAGE_STATE : undefined;
   }
 
   private async scrapePage(page: Page, url: string): Promise<void> {

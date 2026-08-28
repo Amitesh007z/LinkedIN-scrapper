@@ -23,6 +23,8 @@ Profile extraction requires a Chromium installation and authorized LinkedIn cred
 
 If LinkedIn presents an authwall, run `npm run auth:linkedin`. A visible browser opens so you can complete login and verification yourself. The command saves the authorized session to `storageState.json`, which is gitignored and reused by the API. Never commit or share that file.
 
+For Render automatic reuse, place the complete contents of a freshly created `storageState.json` into the secret `LINKEDIN_STORAGE_STATE_JSON`. This is sensitive session material and can expire or be invalidated by LinkedIn; credentials alone cannot guarantee cloud login because LinkedIn may challenge datacenter traffic.
+
 ## API
 
 `GET /v1/profile?url=https://www.linkedin.com/in/example/` and `POST /v1/profile` with `{ "url": "https://www.linkedin.com/in/example/" }` return normalized profile data. Interactive documentation is available at `/docs`; the OpenAPI document is available at `/openapi.json`.

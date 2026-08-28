@@ -10,6 +10,7 @@ const testConfig: AppConfig = {
   LINKEDIN_EMAIL: undefined,
   LINKEDIN_PASSWORD: undefined,
   LINKEDIN_STORAGE_STATE: 'storageState.json',
+  LINKEDIN_STORAGE_STATE_JSON: undefined,
   BROWSER_HEADLESS: true,
   PAGE_TIMEOUT_MS: 30_000,
   SCRAPE_TIMEOUT_MS: 45_000,

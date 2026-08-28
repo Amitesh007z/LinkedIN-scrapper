@@ -15,3 +15,5 @@ services:
         sync: false
       - key: LINKEDIN_STORAGE_STATE
         value: /tmp/profilelens-storage.json
+      - key: LINKEDIN_STORAGE_STATE_JSON
+        sync: false
