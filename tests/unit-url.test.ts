@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { canonicalizeLinkedInUrl, InvalidProfileUrlError } from '../src/utils/linkedin-url.js';
 import { dedupeStrings, normalizeDate, normalizeText } from '../src/utils/normalize.js';
+import { loadConfig } from '../src/config/env.js';
 
 describe('LinkedIn URL validation', () => {
   it('canonicalizes valid profile URLs', () => {
@@ -20,5 +21,12 @@ describe('normalization', () => {
 
   it('deduplicates strings case-insensitively', () => {
     expect(dedupeStrings(['JavaScript', 'javascript', 'TypeScript'])).toEqual(['JavaScript', 'TypeScript']);
+  });
+});
+
+describe('runtime configuration', () => {
+  it('protects production from loopback binding', () => {
+    expect(loadConfig({ NODE_ENV: 'production', HOST: '127.0.0.1' }).HOST).toBe('0.0.0.0');
+    expect(loadConfig({ NODE_ENV: 'development', HOST: '127.0.0.1' }).HOST).toBe('127.0.0.1');
   });
 });
