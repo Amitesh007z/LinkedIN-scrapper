@@ -74,18 +74,24 @@ export class LinkedInPlaywrightProvider implements ProfileProvider {
     page.setDefaultNavigationTimeout(this.config.PAGE_TIMEOUT_MS);
     try {
       await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded' });
+      const loginUrl = page.url();
+      if (loginUrl.includes('/authwall')) {
+        throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502, { stage: 'LOGIN_PAGE', reason: 'AUTHWALL_REDIRECT', challenge: true });
+      }
       await this.login(page);
       const bodyText = (await page.locator('body').innerText()).toLowerCase();
       if (page.url().includes('/authwall') || bodyText.includes('security verification') || bodyText.includes('checkpoint') || bodyText.includes('two-step verification')) {
-        throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502);
+        throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502, { stage: 'POST_LOGIN', reason: 'SECURITY_CHALLENGE', challenge: true });
       }
       if (page.url().includes('/login') || bodyText.includes('sign in to linkedin') || bodyText.includes('join linkedin')) {
-        throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn authentication failed.', 502);
+        const invalidCredentials = /incorrect|invalid|wrong|try again/.test(bodyText);
+        throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn authentication failed.', 502, { stage: 'POST_LOGIN', reason: invalidCredentials ? 'CREDENTIALS_REJECTED' : 'LOGIN_STATE_NOT_CONFIRMED', challenge: false });
       }
       return context;
     } catch (error) {
       await context.close();
-      throw error;
+      if (error instanceof AppError) throw error;
+      throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn authentication failed.', 502, { stage: 'AUTHENTICATE', reason: 'UNEXPECTED_AUTH_ERROR', challenge: false });
     } finally {
       await page.close().catch(() => undefined);
     }
@@ -127,23 +133,28 @@ export class LinkedInPlaywrightProvider implements ProfileProvider {
 
   private async login(page: Page): Promise<void> {
     if (!this.config.LINKEDIN_EMAIL || !this.config.LINKEDIN_PASSWORD) {
-      throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn credentials are not configured.', 502);
+      throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn credentials are not configured.', 502, { stage: 'LOGIN', reason: 'CREDENTIALS_NOT_CONFIGURED', challenge: false });
     }
     try {
-      const username = page.locator('input[autocomplete="username"]:visible').first();
+      const username = page.locator('input[autocomplete^="username"]:visible').first();
       const password = page.locator('input[autocomplete="current-password"]:visible').first();
       const submit = page.getByRole('button', { name: /^sign in$/i }).filter({ visible: true }).first();
       await username.waitFor({ state: 'visible', timeout: 10_000 });
+      await password.waitFor({ state: 'visible', timeout: 5_000 });
+      await submit.waitFor({ state: 'visible', timeout: 5_000 });
       await username.fill(this.config.LINKEDIN_EMAIL);
       await password.fill(this.config.LINKEDIN_PASSWORD);
       await submit.click({ timeout: 5_000 });
-      await page.waitForLoadState('domcontentloaded', { timeout: 10_000 });
+      await Promise.race([
+        page.waitForURL((url) => !url.pathname.startsWith('/login') && !url.pathname.startsWith('/authwall'), { timeout: 15_000 }),
+        page.waitForTimeout(5_000)
+      ]);
     } catch {
       const currentText = (await page.locator('body').innerText().catch(() => '')).toLowerCase();
       if (page.url().includes('/authwall') || currentText.includes('security verification') || currentText.includes('checkpoint')) {
-        throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502);
+        throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502, { stage: 'LOGIN_SUBMIT', reason: 'SECURITY_CHALLENGE', challenge: true });
       }
-      throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn login controls were unavailable or the login did not complete.', 502);
+      throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn login controls were unavailable or the login did not complete.', 502, { stage: 'LOGIN_SUBMIT', reason: 'CONTROLS_OR_REDIRECT_FAILED', challenge: false });
     }
   }
 
