@@ -9,6 +9,7 @@ const testConfig: AppConfig = {
   LOG_LEVEL: 'silent',
   LINKEDIN_EMAIL: undefined,
   LINKEDIN_PASSWORD: undefined,
+  LINKEDIN_MANUAL_AUTH: false,
   BROWSER_HEADLESS: true,
   PAGE_TIMEOUT_MS: 30_000,
   SCRAPE_TIMEOUT_MS: 45_000,
