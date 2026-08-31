@@ -1,6 +1,6 @@
-# ProfileLens API
+#  API
 
-ProfileLens is a TypeScript API that accepts a public LinkedIn profile URL and returns structured profile data from an authorized browser session. The project is designed around a legitimate browser-based extraction flow: the app logs in with real credentials in a local browser context, keeps that session alive while valid, and fails gracefully when LinkedIn triggers a security challenge instead of trying to bypass that protection.
+It is a TypeScript API that accepts a public LinkedIn profile URL and returns structured profile data from an authorized browser session. The project is designed around a legitimate browser-based extraction flow: the app logs in with real credentials in a local browser context, keeps that session alive while valid, and fails gracefully when LinkedIn triggers a security challenge instead of trying to bypass that protection.
 
 ## Current approach we are following
 
