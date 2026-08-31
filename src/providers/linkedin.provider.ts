@@ -80,15 +80,27 @@ export class LinkedInPlaywrightProvider implements ProfileProvider {
       await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded' });
       const loginUrl = page.url();
       if (loginUrl.includes('/authwall')) {
-        throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502, { stage: 'LOGIN_PAGE', reason: 'AUTHWALL_REDIRECT', challenge: true });
+        if (this.config.LINKEDIN_MANUAL_AUTH) {
+          await this.waitForManualAuth(page, 'LOGIN_PAGE');
+        } else {
+          throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502, { stage: 'LOGIN_PAGE', reason: 'AUTHWALL_REDIRECT', challenge: true });
+        }
       }
       await this.login(page);
       const bodyText = (await page.locator('body').innerText()).toLowerCase();
       if (page.url().includes('/authwall') || bodyText.includes('security verification') || bodyText.includes('checkpoint') || bodyText.includes('two-step verification')) {
+        if (this.config.LINKEDIN_MANUAL_AUTH) {
+          await this.waitForManualAuth(page, 'POST_LOGIN');
+        } else {
+          throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502, { stage: 'POST_LOGIN', reason: 'SECURITY_CHALLENGE', challenge: true });
+        }
+      }
+      const refreshedText = (await page.locator('body').innerText()).toLowerCase();
+      if (page.url().includes('/authwall') || refreshedText.includes('security verification') || refreshedText.includes('checkpoint') || refreshedText.includes('two-step verification')) {
         throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge.', 502, { stage: 'POST_LOGIN', reason: 'SECURITY_CHALLENGE', challenge: true });
       }
-      if (page.url().includes('/login') || bodyText.includes('sign in to linkedin') || bodyText.includes('join linkedin')) {
-        const invalidCredentials = /incorrect|invalid|wrong|try again/.test(bodyText);
+      if (page.url().includes('/login') || refreshedText.includes('sign in to linkedin') || refreshedText.includes('join linkedin')) {
+        const invalidCredentials = /incorrect|invalid|wrong|try again/.test(refreshedText);
         throw new AppError('AUTHENTICATION_FAILED', 'LinkedIn authentication failed.', 502, { stage: 'POST_LOGIN', reason: invalidCredentials ? 'CREDENTIALS_REJECTED' : 'LOGIN_STATE_NOT_CONFIRMED', challenge: false });
       }
       this.authState = 'AUTHENTICATED';
@@ -160,6 +172,26 @@ export class LinkedInPlaywrightProvider implements ProfileProvider {
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       await page.waitForTimeout(350);
     }
+  }
+
+  private async waitForManualAuth(page: Page, stage: 'LOGIN_PAGE' | 'POST_LOGIN'): Promise<void> {
+    const startedAt = Date.now();
+    const timeoutMs = 180_000;
+    console.warn(`Manual LinkedIn auth enabled at ${stage}. Complete the verification in the visible browser window.`);
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const currentUrl = page.url();
+      const bodyText = (await page.locator('body').innerText().catch(() => '')).toLowerCase();
+      const challengeDetected = currentUrl.includes('/authwall') || bodyText.includes('security verification') || bodyText.includes('checkpoint') || bodyText.includes('two-step verification') || bodyText.includes('verify your identity');
+
+      if (!challengeDetected) {
+        return;
+      }
+
+      await page.waitForTimeout(2_000);
+    }
+
+    throw new AppError('AUTHENTICATION_CHALLENGE', 'LinkedIn requested an authentication challenge and manual verification did not complete in time.', 502, { stage, reason: 'MANUAL_AUTH_TIMEOUT', challenge: true });
   }
 
   private async withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {

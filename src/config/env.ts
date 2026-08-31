@@ -8,6 +8,7 @@ const envSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   LINKEDIN_EMAIL: z.string().optional(),
   LINKEDIN_PASSWORD: z.string().optional(),
+  LINKEDIN_MANUAL_AUTH: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   BROWSER_HEADLESS: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
   PAGE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   SCRAPE_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
